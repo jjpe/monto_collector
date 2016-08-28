@@ -1,0 +1,15 @@
+[package]
+name = "monto_collector"
+version = "0.1.0"
+authors = ["Joey Ezechiëls <joey.ezechiels@gmail.com>"]
+description = "Collect and process data for monto tool graphs."
+
+[dependencies]
+env_logger = "0.3"
+log = "0.3"
+json = "0.10.2"
+getopts = "0.2.14"
+chrono = "0.2"
+
+[dependencies.zmq]
+git = "https://github.com/erickt/rust-zmq.git"
