@@ -2,7 +2,7 @@
 name = "monto_collector"
 version = "0.1.0"
 authors = ["Joey Ezechiëls <joey.ezechiels@gmail.com>"]
-description = "Collect and process data for monto tool graphs."
+description = "Performance data collector and processor for Monto tool graphs."
 license = "GPL-3.0"
 
 [dependencies]
