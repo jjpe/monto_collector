@@ -18,12 +18,10 @@ use mongodb::coll::Collection;
 use mongodb::db::ThreadedDatabase;
 use std::env;
 use std::process;
-use std::path::PathBuf;
 use url::Url;
 
 struct Args {
     events: u64,
-    output_file: PathBuf,
     quiet: bool,
     mongodb_url: Url,
 }
@@ -47,7 +45,6 @@ fn parse_args() -> Args {
 
     let mut opts = Options::new();
     opts.optopt("e", "events", "The number of events to capture", "N");
-    opts.optopt("o", "output", "Output file name", "FILE");
     opts.optopt("m", "mongo-url", "URL used to connect to the MongoDB server", "URI");
     opts.optflag("q", "quiet", "Quiet mode i.e. no logging to stdout");
     opts.optflag("h", "help", "Print this help menu");
@@ -64,12 +61,6 @@ fn parse_args() -> Args {
         print_usage(&program_name, &opts);
         process::exit(0);
     }
-
-    let filename: String = match matches.opt_str("output") {
-        None => Local::now().format("%Y-%m-%d_%H:%M:%S.json").to_string(),
-        Some(name) => name,
-    };
-
 
     let mongodb_url: Url = match matches.opt_str("mongo-url") {
         None => Url::parse("mongodb://localhost:27017")
@@ -92,7 +83,6 @@ fn parse_args() -> Args {
 
     Args {
         events: event_count,
-        output_file: PathBuf::from(filename),
         quiet: matches.opt_present("quiet"),
         mongodb_url: mongodb_url,
     }
@@ -185,7 +175,6 @@ fn main() {
     let mut msg = zmq::Message::new().unwrap();
     const WAIT: i32 = 0;
 
-    info!("Writing to {}", args.output_file.display());
     info!("Capturing {} events", args.events);
     info!("MongoDB URI:  {}", args.mongodb_url);
 
