@@ -1,17 +1,13 @@
-#[macro_use]
-extern crate log;
+#[macro_use] extern crate log;
 extern crate env_logger;
-#[macro_use]
-extern crate json;
+#[macro_use] extern crate json;
 extern crate zmq;
 extern crate getopts;
-extern crate chrono;
-#[macro_use(bson, doc)]
-extern crate bson;
+#[macro_use(bson, doc)] extern crate bson;
 extern crate mongodb;
 extern crate url;
+extern crate time;
 
-use chrono::{Local, DateTime};
 use getopts::Options;
 use mongodb::{Client, ThreadedClient};
 use mongodb::coll::Collection;
@@ -88,30 +84,29 @@ fn parse_args() -> Args {
     }
 }
 
-fn log_entry_header(eventno: usize) {
-    if eventno % HEADER_LOG_PERIOD == 1 {
-        // Log the header every `HEADER_LOG_PERIOD` entries
-        info!("    {:->90}", "");
-        info!("    {:^15}{:^14}{:^25}{:^20}{:>8}",
-              "timestamp",
-              "event #",
-              "action",
-              "process",
-              "revision");
-        info!("    {:->90}", "");
-    }
-}
-
 /// Log a header before every X logged events.
 const HEADER_LOG_PERIOD: usize = 50;
 
-/// The target date/time format to be used when calling `stringify_timestamp()`.
-const TIMESTAMP_FORMAT: &'static str = "%Y-%m-%dT%H:%M:%S%.9f%z";
-
-fn stringify_timestamp(ts: DateTime<Local>) -> String {
-    format!("{}", ts.format(TIMESTAMP_FORMAT))
+fn to_nanoseconds(time: time::Tm) -> u64 {
+    const NANOS_PER_SEC: u64 = 1_000_000_000;
+    let (mut nanos, timespec) = (0, time.to_timespec());
+    nanos += timespec.sec  as u64 * NANOS_PER_SEC;
+    nanos += timespec.nsec as u64;
+    return nanos;
 }
 
+fn stringify_timestamp(time: &time::Tm) -> String {
+    const SECS_PER_HOUR: i32 = 60 * 60;
+    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:09} (UTC{:+})",
+            1900 + time.tm_year,
+               1 + time.tm_mon,
+                   time.tm_mday,
+                   time.tm_hour,
+                   time.tm_min,
+                   time.tm_sec,
+                   time.tm_nsec,
+                   time.tm_utcoff / SECS_PER_HOUR)
+}
 
 #[allow(unused)]
 struct SpoofaxPerfDb {
@@ -141,18 +136,28 @@ impl SpoofaxPerfDb {
 }
 
 
+fn log_event_header(eventno: usize) {
+    if eventno % HEADER_LOG_PERIOD == 1 {
+        // Log the header every `HEADER_LOG_PERIOD` entries
+        info!("    {:->110}", "");
+        info!("    {:^37}{:^15}{:^23}{:^20}{:>8}",
+              "timestamp",
+              "event #",
+              "action",
+              "process",
+              "revision");
+        info!("    {:->110}", "");
+    }
+}
+
 fn log_event(eventno: usize,
-             received_at: &DateTime<Local>,
+             timestamp: &str,
              args: &Args,
              action: &str,
              process: &str,
              revision: u64) {
-    log_entry_header(eventno);
-    let timestamp = {
-        let mut timestamp = format!("{}", received_at.time());
-        while timestamp.len() < 15 { timestamp.push(' '); }
-        timestamp
-    };
+    log_event_header(eventno);
+    // while timestamp.len() < 15 { timestamp.push(' '); }
     info!("    {:-<15}   {:>3}/{}   {:^25}{:^20}{:>6}",
           timestamp,
           eventno, args.events,
@@ -164,9 +169,7 @@ fn log_event(eventno: usize,
 
 fn main() {
     let args = parse_args();
-    if !args.quiet {
-        env_logger::init().unwrap(); // Only log if quiet mode is not active
-    }
+    if !args.quiet { env_logger::init().unwrap(); }
 
     let mut ctx = zmq::Context::new();
     let mut socket = ctx.socket(zmq::PULL).expect("Failed to create socket");
@@ -177,31 +180,38 @@ fn main() {
 
     info!("Capturing {} events", args.events);
     info!("MongoDB URI:  {}", args.mongodb_url);
+    let now = time::now_utc().to_local();
+    info!("timestamp: {}", stringify_timestamp(&now));
 
     let mut events = vec![];
-    for eventno in 1.. {
-        assert_eq!(socket.recv(&mut msg, WAIT).unwrap(),  ());
+    for eventno in 1 .. args.events as usize + 1 {
+        assert!(socket.recv(&mut msg, WAIT).is_ok());
+
+        let timestamp: time::Tm = time::now_utc();
+        let timestamp_ns: u64 = to_nanoseconds(timestamp);
+        let timestamp_string = stringify_timestamp(&timestamp);
+
         let json_str = msg.as_str().unwrap();
-        let received_at: DateTime<Local> = Local::now();
         let mut report: json::JsonValue = json::parse(json_str).unwrap();
         let action_json =   report["action"].take();
         let process_json =  report["process"].take();
         let revision_json = report["revision"].take();
-        let action =   action_json.as_str().unwrap();
-        let process =  process_json.as_str().unwrap();
-        let revision = revision_json.as_u64().unwrap();
-        log_event(eventno, &received_at, &args, action, process, revision);
+        let duration_json = report["duration"].take();
+        let   action =   action_json.as_str().expect("action as &str");
+        let  process =  process_json.as_str().expect("process as &str");
+        let revision = revision_json.as_u64().expect("revision as u64");
+        let duration = duration_json.as_u64().expect("duration as u64");
+        log_event(eventno, &timestamp_string, &args, action, process, revision);
 
-        let timestamp = stringify_timestamp(received_at);
         let event = doc! {
             "action" => action,
             "process" => process,
             "revision" => revision,
-            "timestamp" => timestamp
+            "duration_nanos" => duration,
+            "collector_timestamp" => timestamp_string,
+            "collector_timestamp_ns" => timestamp_ns
         };
         events.push(event);
-
-        if eventno == args.events as usize { break; }
     }
 
     let spdb = SpoofaxPerfDb::connect(&args.mongodb_url);
@@ -209,4 +219,4 @@ fn main() {
     info!("Exiting");
 }
 
-//  LocalWords:  mongo MongoDB url perf stringify
+//  LocalWords:  mongo MongoDB url perf stringify ns

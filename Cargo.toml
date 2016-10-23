@@ -10,10 +10,10 @@ env_logger = "0.3"
 log = "0.3"
 json = "0.10.2"
 getopts = "0.2.14"
-chrono = "0.2"
 bson = "0.3"
 mongodb = "0.1.6"
 url = "1.2.0"
+time = "0.1"
 
 [dependencies.zmq]
 git = "https://github.com/erickt/rust-zmq.git"
