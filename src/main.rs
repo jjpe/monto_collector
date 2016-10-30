@@ -1,12 +1,13 @@
-#[macro_use] extern crate log;
+#[macro_use(bson, doc)] extern crate bson;
 extern crate env_logger;
 #[macro_use] extern crate json;
-extern crate zmq;
+extern crate libc;
+#[macro_use] extern crate log;
 extern crate getopts;
-#[macro_use(bson, doc)] extern crate bson;
 extern crate mongodb;
-extern crate url;
 extern crate time;
+extern crate url;
+extern crate zmqdl;
 
 use getopts::Options;
 use mongodb::{Client, ThreadedClient};
@@ -15,9 +16,10 @@ use mongodb::db::ThreadedDatabase;
 use std::env;
 use std::process;
 use url::Url;
+use zmqdl::SocketType;
 
 struct Args {
-    events: u64,
+    events: u64, // TODO: remove
     quiet: bool,
     mongodb_url: Url,
 }
@@ -109,29 +111,30 @@ fn stringify_timestamp(time: &time::Tm) -> String {
 }
 
 #[allow(unused)]
-struct SpoofaxPerfDb {
+struct CollectorDb {
     client: Client,
     events: Collection,
 }
 
-impl SpoofaxPerfDb {
+impl CollectorDb {
     pub fn connect(url: &Url) -> Self {
         let client = Client::with_uri(url.as_str())
             .ok().expect("Failed to initialize MongoDB connector");
-        let coll = client.db("spoofax_perf").collection("events");
-        SpoofaxPerfDb {
+        let coll = client.db("collector").collection("events");
+        CollectorDb {
             client: client,
             events: coll,
         }
     }
 
-    pub fn write_events(self, events: Vec<bson::Document>) -> Self {
+    pub fn write_events(&self, events: Vec<bson::Document>)
+                        -> Vec<bson::Document> {
         let len = events.len();
         match self.events.insert_many(events, None) {
             Ok(_) => info!("Wrote {} events to MongoDB", len),
             Err(err) => panic!("Inserting events failed: {:?}", err),
-        }
-        self
+        };
+        vec![]
     }
 }
 
@@ -171,28 +174,49 @@ fn main() {
     let args = parse_args();
     if !args.quiet { env_logger::init().unwrap(); }
 
-    let mut ctx = zmq::Context::new();
-    let mut socket = ctx.socket(zmq::PULL).expect("Failed to create socket");
+    let lib = zmqdl::ZmqLib::new(zmqdl::location()).expect("Lib creation failed");
+    let ctx = lib.new_context().expect("Context creation failed");
+    let socket = ctx.new_socket(SocketType::PULL).expect("Socket creation failed");
     assert!(socket.bind("tcp://*:9090").is_ok());
-
-    let mut msg = zmq::Message::new().unwrap();
-    const WAIT: i32 = 0;
 
     info!("Capturing {} events", args.events);
     info!("MongoDB URI:  {}", args.mongodb_url);
     let now = time::now_utc().to_local();
     info!("timestamp: {}", stringify_timestamp(&now));
 
-    let mut events = vec![];
-    for eventno in 1 .. args.events as usize + 1 {
-        assert!(socket.recv(&mut msg, WAIT).is_ok());
+    const WAIT: libc::c_int = 0;
+    const MB: usize = 1024 * 1024;
+    let mut buffer = vec![0u8; 16 * MB];
 
+    let db = CollectorDb::connect(&args.mongodb_url);
+    let mut events = vec![];
+
+    for eventno in 1 .. {
+        let msgbuf = socket.receive(&mut buffer, WAIT).unwrap();
+        let msg = String::from_utf8_lossy(msgbuf);
+        let mut json: json::JsonValue = json::parse(&msg).unwrap();
+
+        if json.has_key("cmd") {
+            let cmd_json = json["cmd"].take();
+            match cmd_json.as_str().expect("cmd as &str") {
+                "flush" => if events.len() > 0 {
+                    events = db.write_events(events)
+                },
+                "exit" => {
+                    info!("Exiting");
+                    std::process::exit(0);
+                },
+                cmd => warn!("Unknown cmd '{}'", cmd),
+            };
+            continue;
+        }
+
+        // Since the msg is not a command, it is a report.
         let timestamp: time::Tm = time::now_utc();
         let timestamp_ns: u64 = to_nanoseconds(timestamp);
         let timestamp_string = stringify_timestamp(&timestamp);
 
-        let json_str = msg.as_str().unwrap();
-        let mut report: json::JsonValue = json::parse(json_str).unwrap();
+        let mut report = json;
         let action_json =   report["action"].take();
         let process_json =  report["process"].take();
         let revision_json = report["revision"].take();
@@ -213,10 +237,6 @@ fn main() {
         };
         events.push(event);
     }
-
-    let spdb = SpoofaxPerfDb::connect(&args.mongodb_url);
-    spdb.write_events(events);
-    info!("Exiting");
 }
 
 //  LocalWords:  mongo MongoDB url perf stringify ns
