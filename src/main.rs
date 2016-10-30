@@ -132,7 +132,7 @@ impl CollectorDb {
         let len = events.len();
         match self.events.insert_many(events, None) {
             Ok(_) => info!("Wrote {} events to MongoDB", len),
-            Err(err) => panic!("Inserting events failed: {:?}", err),
+            Err(err) => warn!("Inserting events failed: {:?}", err),
         };
         vec![]
     }
