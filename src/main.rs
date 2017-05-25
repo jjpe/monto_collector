@@ -1,90 +1,142 @@
 #[macro_use(bson, doc)] extern crate bson;
+extern crate clap;
 extern crate env_logger;
-#[macro_use] extern crate json;
+extern crate json;
 extern crate libc;
 #[macro_use] extern crate log;
-extern crate getopts;
 extern crate mongodb;
 extern crate time;
 extern crate url;
 extern crate zmqdl;
 
-use getopts::Options;
-use mongodb::{Client, ThreadedClient};
-use mongodb::coll::Collection;
+use clap::{App, Arg, SubCommand};
+use mongodb::{ThreadedClient};
 use mongodb::db::ThreadedDatabase;
-use std::env;
-use std::process;
 use url::Url;
 use zmqdl::SocketType;
 
+const BIN_NAME: &str = env!("CARGO_PKG_NAME");
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+const AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
+const DESCRIPTION: &str =
+    r#"Collect and save events from Amplify processes.
+After all events are captured, the data is written to a MongoDB database."#;
+
+
+#[derive(Clone, Debug)]
 struct Args {
-    events: u64, // TODO: remove
-    quiet: bool,
+    events: u64,
     mongodb_url: Url,
+    quiet: bool,
 }
 
-fn print_usage(program_name: &str, opts: &Options) {
-    let description = r#"
-Collect and save events from various Monto processes.
-After some number of events is captured, the data is written
-to a file in JSON format. By default the output file has a
-name with the format "YYYY-MM-DD_hh:mm:ss.json", representing
-the date and time of the moment the file was written."#;
-    println!("Usage: {} {}\n{}",
-             program_name,
-             "[-h | --help] [-e N | --events N] [-o FILE | --output FILE]",
-             opts.usage(description));
-}
 
-fn parse_args() -> Args {
-    let args: Vec<String> = env::args().collect();
-    let program_name = args[0].clone();
-
-    let mut opts = Options::new();
-    opts.optopt("e", "events", "The number of events to capture", "N");
-    opts.optopt("m", "mongo-url", "URL used to connect to the MongoDB server", "URI");
-    opts.optflag("q", "quiet", "Quiet mode i.e. no logging to stdout");
-    opts.optflag("h", "help", "Print this help menu");
-    let matches = match opts.parse(&args[1..]) {
-        Ok(matches) => matches,
-        Err(err) => {
-            error!("error parsing matches: {}", err);
-            print_usage(&program_name, &opts);
-            process::exit(0);
-        },
-    };
-
-    if matches.opt_present("help") {
-        print_usage(&program_name, &opts);
-        process::exit(0);
-    }
-
-    let mongodb_url: Url = match matches.opt_str("mongo-url") {
-        None => Url::parse("mongodb://localhost:27017")
-            .expect("Could not parse default MongoDB server URL"),
-        Some(raw_url) => Url::parse(&raw_url)
-            .expect("Could not parse provided MongoDB server URL"),
-    };
-
-    const DEFAULT_EVENT_CAPTURE_COUNT: u64 = 10;
-    let event_count: u64 = match matches.opt_str("events") {
-        None => DEFAULT_EVENT_CAPTURE_COUNT,
-        Some(count_string) => match count_string.parse::<u64>() {
-            Ok(count) => count,
-            Err(err) => {
-                error!("Couldn't parse -e/--events arg: {:?}", err);
-                DEFAULT_EVENT_CAPTURE_COUNT
-            },
-        },
-    };
+fn parse_args<'a>() -> Args {
+    let matches = App::new(BIN_NAME)
+        .version(VERSION)
+        .author(AUTHORS)
+        .about(DESCRIPTION)
+        .arg(Arg::with_name("events")
+             .short("e")
+             .long("events")
+             .value_name("N")
+             .help("The number of events to capture. The default is 10."))
+        .arg(Arg::with_name("mongo-url")
+             .short("u")
+             .long("mongo-url")
+             .value_name("URL")
+             .help("Customize the URL used to connect to the MongoDB server.
+The default is mongodb://localhost:27017."))
+        .arg(Arg::with_name("quiet")
+             .short("q")
+             .long("quiet")
+             .help("Quiet mode i.e. no logging to stdout."))
+        // TODO:
+        // .subcommand(SubCommand::with_name("test")
+        //             .about("controls testing features")
+        //             .version(VERSION)
+        //             .author(AUTHORS)
+        //             .arg_from_usage("-d, --debug 'Print debug information'"))
+        .get_matches();
 
     Args {
-        events: event_count,
-        quiet: matches.opt_present("quiet"),
-        mongodb_url: mongodb_url,
+        events: matches.value_of("events")
+            .unwrap_or("10")
+            .parse().unwrap(/* TODO: std::num::ParseIntError */),
+        mongodb_url: matches.value_of("mongo-url")
+            .unwrap_or("mongodb://localhost:27017")
+            .parse().unwrap(/* TODO: url::ParseError */),
+        quiet: matches.is_present("quiet"),
     }
 }
+
+// struct Args {
+//     events: u64, // TODO: remove
+//     quiet: bool,
+//     mongodb_url: Url,
+// }
+
+// fn print_usage(program_name: &str, opts: &Options) {
+//     let description = r#"
+// Collect and save events from various Monto processes.
+// After some number of events is captured, the data is written
+// to a file in JSON format. By default the output file has a
+// name with the format "YYYY-MM-DD_hh:mm:ss.json", representing
+// the date and time of the moment the file was written."#;
+//     println!("Usage: {} {}\n{}",
+//              program_name,
+//              "[-h | --help] [-e N | --events N] [-o FILE | --output FILE]",
+//              opts.usage(description));
+// }
+
+// fn parse_args() -> Args {
+//     let args: Vec<String> = env::args().collect();
+//     let program_name = args[0].clone();
+
+//     let mut opts = Options::new();
+//     opts.optopt("e", "events", "The number of events to capture", "N");
+//     opts.optopt("m", "mongo-url", "URL used to connect to the MongoDB server", "URI");
+//     opts.optflag("q", "quiet", "Quiet mode i.e. no logging to stdout");
+//     opts.optflag("h", "help", "Print this help menu");
+//     let matches = match opts.parse(&args[1..]) {
+//         Ok(matches) => matches,
+//         Err(err) => {
+//             error!("error parsing matches: {}", err);
+//             print_usage(&program_name, &opts);
+//             process::exit(0);
+//         },
+//     };
+
+//     if matches.opt_present("help") {
+//         print_usage(&program_name, &opts);
+//         process::exit(0);
+//     }
+
+//     let mongodb_url: Url = match matches.opt_str("mongo-url") {
+//         None => Url::parse("mongodb://localhost:27017")
+//             .expect("Could not parse default MongoDB server URL"),
+//         Some(raw_url) => Url::parse(&raw_url)
+//             .expect("Could not parse provided MongoDB server URL"),
+//     };
+
+//     const DEFAULT_EVENT_CAPTURE_COUNT: u64 = 10;
+//     let event_count: u64 = match matches.opt_str("events") {
+//         None => DEFAULT_EVENT_CAPTURE_COUNT,
+//         Some(count_string) => match count_string.parse::<u64>() {
+//             Ok(count) => count,
+//             Err(err) => {
+//                 error!("Couldn't parse -e/--events arg: {:?}", err);
+//                 DEFAULT_EVENT_CAPTURE_COUNT
+//             },
+//         },
+//     };
+
+//     Args {
+//         events: event_count,
+//         quiet: matches.opt_present("quiet"),
+//         mongodb_url: mongodb_url,
+//     }
+// }
 
 /// Log a header before every X logged events.
 const HEADER_LOG_PERIOD: usize = 50;
@@ -112,14 +164,14 @@ fn stringify_timestamp(time: &time::Tm) -> String {
 
 #[allow(unused)]
 struct CollectorDb {
-    client: Client,
-    events: Collection,
+    client: mongodb::Client,
+    events: mongodb::coll::Collection,
 }
 
 impl CollectorDb {
     pub fn connect(url: &Url) -> Self {
-        let client = Client::with_uri(url.as_str())
-            .ok().expect("Failed to initialize MongoDB connector");
+        let client = mongodb::Client::with_uri(url.as_str())
+            .expect("Failed to initialize MongoDB connector");
         let coll = client.db("collector").collection("events");
         CollectorDb {
             client: client,
@@ -127,14 +179,12 @@ impl CollectorDb {
         }
     }
 
-    pub fn write_events(&self, events: Vec<bson::Document>)
-                        -> Vec<bson::Document> {
+    pub fn write_events(&self, events: Vec<bson::Document>) {
         let len = events.len();
         match self.events.insert_many(events, None) {
             Ok(_) => info!("Wrote {} events to MongoDB", len),
             Err(err) => warn!("Inserting events failed: {:?}", err),
         };
-        vec![]
     }
 }
 
@@ -194,13 +244,13 @@ fn main() {
     for eventno in 1 .. {
         let msgbuf = socket.receive(&mut buffer, WAIT).unwrap();
         let msg = String::from_utf8_lossy(msgbuf);
-        let mut json: json::JsonValue = json::parse(&msg).unwrap();
+        let json: json::JsonValue = json::parse(&msg).unwrap();
 
-        if json.has_key("cmd") {
-            let cmd_json = json["cmd"].take();
-            match cmd_json.as_str().expect("cmd as &str") {
+        if let Some(cmd) = json["cmd"].as_str() {
+            match cmd {
                 "flush" => if events.len() > 0 {
-                    events = db.write_events(events)
+                    db.write_events(events);
+                    events = vec![];
                 },
                 "exit" => {
                     info!("Exiting");
@@ -208,7 +258,7 @@ fn main() {
                 },
                 cmd => warn!("Unknown cmd '{}'", cmd),
             };
-            continue;
+            continue
         }
 
         // Since the msg is not a command, it is a report.
