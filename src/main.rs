@@ -244,9 +244,9 @@ fn main() {
     for eventno in 1 .. {
         let msgbuf = socket.receive(&mut buffer, WAIT).unwrap();
         let msg = String::from_utf8_lossy(msgbuf);
-        let json: json::JsonValue = json::parse(&msg).unwrap();
+        let mut report: json::JsonValue = json::parse(&msg).unwrap();
 
-        if let Some(cmd) = json["cmd"].as_str() {
+        if let Some(cmd) = report["cmd"].as_str() {
             match cmd {
                 "flush" => if events.len() > 0 {
                     db.write_events(events);
@@ -266,15 +266,10 @@ fn main() {
         let timestamp_ns: u64 = to_nanoseconds(timestamp);
         let timestamp_string = stringify_timestamp(&timestamp);
 
-        let mut report = json;
-        let action_json =   report["action"].take();
-        let process_json =  report["process"].take();
-        let revision_json = report["revision"].take();
-        let duration_json = report["duration"].take();
-        let   action =   action_json.as_str().expect("action as &str");
-        let  process =  process_json.as_str().expect("process as &str");
-        let revision = revision_json.as_u64().expect("revision as u64");
-        let duration = duration_json.as_u64().expect("duration as u64");
+        let   action = report["action"].as_str().expect("action as &str");
+        let  process = report["process"].as_str().expect("process as &str");
+        let revision = report["revision"].as_u64().expect("revision as u64");
+        let duration = report["duration"].as_u64().expect("duration as u64");
         log_event(eventno, &timestamp_string, &args, action, process, revision);
 
         let event = doc! {
