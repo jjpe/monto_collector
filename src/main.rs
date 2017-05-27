@@ -3,23 +3,23 @@ extern crate clap;
 extern crate env_logger;
 extern crate json;
 extern crate libc;
-#[macro_use] extern crate log;
+extern crate libcereal;
+#[macro_use(info, log, warn)] extern crate log;
 extern crate mongodb;
 extern crate time;
 extern crate url;
-extern crate zmqdl;
 
 use clap::{App, Arg, SubCommand};
+use libcereal::Method;
+use libcereal::amplify::{BReportReceiver, Report, UReportReceiver};
 use mongodb::{ThreadedClient};
 use mongodb::db::ThreadedDatabase;
 use url::Url;
-use zmqdl::SocketType;
 
 const BIN_NAME: &str = env!("CARGO_PKG_NAME");
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
-const DESCRIPTION: &str =
-    r#"Collect and save events from Amplify processes.
+const DESCRIPTION: &str = r#"Collect and save events from Amplify processes.
 After all events are captured, the data is written to a MongoDB database."#;
 
 
@@ -28,118 +28,73 @@ struct Args {
     events: u64,
     mongodb_url: Url,
     quiet: bool,
+    header_period: u64,
+    method: Method,
 }
 
-
-fn parse_args<'a>() -> Args {
-    let matches = App::new(BIN_NAME)
-        .version(VERSION)
-        .author(AUTHORS)
-        .about(DESCRIPTION)
-        .arg(Arg::with_name("events")
-             .short("e")
-             .long("events")
-             .value_name("N")
-             .help("The number of events to capture. The default is 10."))
-        .arg(Arg::with_name("mongo-url")
-             .short("u")
-             .long("mongo-url")
-             .value_name("URL")
-             .help("Customize the URL used to connect to the MongoDB server.
+impl Args {
+    fn process() -> Args {
+        let matches = App::new(BIN_NAME)
+            .version(VERSION)
+            .author(AUTHORS)
+            .about(DESCRIPTION)
+            .arg(Arg::with_name("events")
+                 .short("e")
+                 .long("events")
+                 .value_name("N")
+                 .help("The number of events to capture. The default is 10."))
+            .arg(Arg::with_name("mongo-url")
+                 .short("u")
+                 .long("mongo-url")
+                 .value_name("URL")
+                 .help("Customize the URL used to connect to the MongoDB server.
 The default is mongodb://localhost:27017."))
-        .arg(Arg::with_name("quiet")
-             .short("q")
-             .long("quiet")
-             .help("Quiet mode i.e. no logging to stdout."))
+            .arg(Arg::with_name("quiet")
+                 .short("q")
+                 .long("quiet")
+                 .help("Quiet mode i.e. no logging to stdout."))
+            .arg(Arg::with_name("header-period")
+                 .short("p")
+                 .long("header-period")
+                 .value_name("P")
+                 .help("Log a header above every P logged events."))
+            .arg(Arg::with_name("serialize-using-json")
+                 .short("j")
+                 .long("serialize-using-json")
+                 .help("Serialize reports using JSON."))
+            .arg(Arg::with_name("serialize-using-capnp")
+                 .short("c")
+                 .long("serialize-using-capnp")
+                 .help("Serialize reports using Cap'n Proto."))
         // TODO:
         // .subcommand(SubCommand::with_name("test")
         //             .about("controls testing features")
         //             .version(VERSION)
         //             .author(AUTHORS)
         //             .arg_from_usage("-d, --debug 'Print debug information'"))
-        .get_matches();
+            .get_matches();
 
-    Args {
-        events: matches.value_of("events")
-            .unwrap_or("10")
-            .parse().unwrap(/* TODO: std::num::ParseIntError */),
-        mongodb_url: matches.value_of("mongo-url")
-            .unwrap_or("mongodb://localhost:27017")
-            .parse().unwrap(/* TODO: url::ParseError */),
-        quiet: matches.is_present("quiet"),
+        let method: Method =
+            if matches.is_present("serialize-using-json") { Method::Json }
+            else { Method::CapnProto };
+
+        Args {
+            events: matches.value_of("events")
+                .unwrap_or("10")
+                .parse().unwrap(/* TODO: std::num::ParseIntError */),
+            mongodb_url: matches.value_of("mongo-url")
+                .unwrap_or("mongodb://localhost:27017")
+                .parse().unwrap(/* TODO: url::ParseError */),
+            quiet: matches.is_present("quiet"),
+            header_period: matches.value_of("header-period")
+                .unwrap_or("50")
+                .parse().unwrap(/* TODO: std::num::ParseIntError */),
+            method: method,
+        }
     }
 }
 
-// struct Args {
-//     events: u64, // TODO: remove
-//     quiet: bool,
-//     mongodb_url: Url,
-// }
 
-// fn print_usage(program_name: &str, opts: &Options) {
-//     let description = r#"
-// Collect and save events from various Monto processes.
-// After some number of events is captured, the data is written
-// to a file in JSON format. By default the output file has a
-// name with the format "YYYY-MM-DD_hh:mm:ss.json", representing
-// the date and time of the moment the file was written."#;
-//     println!("Usage: {} {}\n{}",
-//              program_name,
-//              "[-h | --help] [-e N | --events N] [-o FILE | --output FILE]",
-//              opts.usage(description));
-// }
-
-// fn parse_args() -> Args {
-//     let args: Vec<String> = env::args().collect();
-//     let program_name = args[0].clone();
-
-//     let mut opts = Options::new();
-//     opts.optopt("e", "events", "The number of events to capture", "N");
-//     opts.optopt("m", "mongo-url", "URL used to connect to the MongoDB server", "URI");
-//     opts.optflag("q", "quiet", "Quiet mode i.e. no logging to stdout");
-//     opts.optflag("h", "help", "Print this help menu");
-//     let matches = match opts.parse(&args[1..]) {
-//         Ok(matches) => matches,
-//         Err(err) => {
-//             error!("error parsing matches: {}", err);
-//             print_usage(&program_name, &opts);
-//             process::exit(0);
-//         },
-//     };
-
-//     if matches.opt_present("help") {
-//         print_usage(&program_name, &opts);
-//         process::exit(0);
-//     }
-
-//     let mongodb_url: Url = match matches.opt_str("mongo-url") {
-//         None => Url::parse("mongodb://localhost:27017")
-//             .expect("Could not parse default MongoDB server URL"),
-//         Some(raw_url) => Url::parse(&raw_url)
-//             .expect("Could not parse provided MongoDB server URL"),
-//     };
-
-//     const DEFAULT_EVENT_CAPTURE_COUNT: u64 = 10;
-//     let event_count: u64 = match matches.opt_str("events") {
-//         None => DEFAULT_EVENT_CAPTURE_COUNT,
-//         Some(count_string) => match count_string.parse::<u64>() {
-//             Ok(count) => count,
-//             Err(err) => {
-//                 error!("Couldn't parse -e/--events arg: {:?}", err);
-//                 DEFAULT_EVENT_CAPTURE_COUNT
-//             },
-//         },
-//     };
-
-//     Args {
-//         events: event_count,
-//         quiet: matches.opt_present("quiet"),
-//         mongodb_url: mongodb_url,
-//     }
-// }
-
-/// Log a header before every X logged events.
-const HEADER_LOG_PERIOD: usize = 50;
 
 fn to_nanoseconds(time: time::Tm) -> u64 {
     const NANOS_PER_SEC: u64 = 1_000_000_000;
@@ -189,9 +144,9 @@ impl CollectorDb {
 }
 
 
-fn log_event_header(eventno: usize) {
-    if eventno % HEADER_LOG_PERIOD == 1 {
-        // Log the header every `HEADER_LOG_PERIOD` entries
+fn log_event_header(eventno: usize, args: &Args) {
+    if eventno % args.header_period as usize == 1 {
+        // Log the header every `args.header_period` entries
         info!("    {:->110}", "");
         info!("    {:^37}{:^15}{:^23}{:^20}{:>8}",
               "timestamp",
@@ -203,85 +158,74 @@ fn log_event_header(eventno: usize) {
     }
 }
 
-fn log_event(eventno: usize,
-             timestamp: &str,
-             args: &Args,
-             action: &str,
-             process: &str,
-             revision: u64) {
-    log_event_header(eventno);
+fn log_event(eventno: usize, timestamp: &str, args: &Args, report: &Report) {
+    log_event_header(eventno, args);
     // while timestamp.len() < 15 { timestamp.push(' '); }
     info!("    {:-<15}   {:>3}/{}   {:^25}{:^20}{:>6}",
           timestamp,
-          eventno, args.events,
-          action,
-          process,
-          revision
+          eventno,
+          args.events,
+          report.action_ref(),
+          report.process_ref(),
+          report.request_number(),
     );
 }
 
 fn main() {
-    let args = parse_args();
-    if !args.quiet { env_logger::init().unwrap(); }
-
-    let lib = zmqdl::ZmqLib::new(zmqdl::location()).expect("Lib creation failed");
-    let ctx = lib.new_context().expect("Context creation failed");
-    let socket = ctx.new_socket(SocketType::PULL).expect("Socket creation failed");
-    assert!(socket.bind("tcp://*:9090").is_ok());
+    std::env::set_var("RUST_LOG", BIN_NAME);
+    let args = Args::process();
+    if !args.quiet { env_logger::init().unwrap(/* TODO: SetLoggerErr */); }
 
     info!("Capturing {} events", args.events);
-    info!("MongoDB URI:  {}", args.mongodb_url);
+    info!("MongoDB @ {}", args.mongodb_url);
     let now = time::now_utc().to_local();
-    info!("timestamp: {}", stringify_timestamp(&now));
+    info!("Started @ {}", stringify_timestamp(&now));
 
-    const WAIT: libc::c_int = 0;
-    const MB: usize = 1024 * 1024;
-    let mut buffer = vec![0u8; 16 * MB];
-
+    info!("Waiting for connection");
+    let mut receiver: BReportReceiver = UReportReceiver::new()
+        .unwrap(/* TODO: ReportErr */)
+        .serialization_method(args.method)
+        .bind().unwrap(/* TODO: ReportErr */);
     let db = CollectorDb::connect(&args.mongodb_url);
     let mut events = vec![];
+    let mut report = Report::default();
 
     for eventno in 1 .. {
-        let msgbuf = socket.receive(&mut buffer, WAIT).unwrap();
-        let msg = String::from_utf8_lossy(msgbuf);
-        let mut report: json::JsonValue = json::parse(&msg).unwrap();
+        receiver.receive(&mut report).unwrap(/* TODO: ReportErr */);
 
-        if let Some(cmd) = report["cmd"].as_str() {
-            match cmd {
-                "flush" => if events.len() > 0 {
-                    db.write_events(events);
-                    events = vec![];
-                },
-                "exit" => {
-                    info!("Exiting");
-                    std::process::exit(0);
-                },
-                cmd => warn!("Unknown cmd '{}'", cmd),
-            };
-            continue
+        match report.command_ref() {
+            None => {/* Not a command but a report, so deal with it below. */},
+            Some("flush") => if events.len() > 0 {
+                db.write_events(events); // This consumes `events`...
+                events = vec![]; // ... so initialize a new one.
+                info!("Flushed events");
+                continue;
+            },
+            Some("exit") => {
+                info!("Exiting");
+                std::process::exit(0);
+            },
+            Some(cmd) => {
+                warn!("Ignoring unknown command '{}'", cmd);
+                continue;
+            },
         }
 
-        // Since the msg is not a command, it is a report.
         let timestamp: time::Tm = time::now_utc();
         let timestamp_ns: u64 = to_nanoseconds(timestamp);
-        let timestamp_string = stringify_timestamp(&timestamp);
+        let timestamp_string: String = stringify_timestamp(&timestamp);
+        log_event(eventno, &timestamp_string, &args, &report);
 
-        let   action = report["action"].as_str().expect("action as &str");
-        let  process = report["process"].as_str().expect("process as &str");
-        let revision = report["revision"].as_u64().expect("revision as u64");
-        let duration = report["duration"].as_u64().expect("duration as u64");
-        log_event(eventno, &timestamp_string, &args, action, process, revision);
-
-        let event = doc! {
-            "action" => action,
-            "process" => process,
-            "revision" => revision,
-            "duration_nanos" => duration,
+        events.push(doc! {
+            "action" => { report.action_ref() },
+            "process" => { report.process_ref() },
+            // TODO: Change `revision` to `request_number` in MongoDB:
+            "revision" => { report.request_number() },
+            "duration_nanos" => { report.duration_nanos() },
             "collector_timestamp" => timestamp_string,
             "collector_timestamp_ns" => timestamp_ns
-        };
-        events.push(event);
+        });
     }
 }
 
-//  LocalWords:  mongo MongoDB url perf stringify ns
+//  LocalWords:  mongo MongoDB url perf stringify ns capnp

@@ -1,6 +1,6 @@
 [package]
 name = "spoofax_collector"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Joey Ezechiëls <joey.ezechiels@gmail.com>"]
 description = "Collect and save events from various Amplify processes."
 license = "GPL-3.0"
@@ -15,8 +15,4 @@ log = "0.3"
 mongodb = "0.2"
 time = "0.1"
 url = "1.4"
-zmqdl = { git = "https://github.com/jjpe/zmqdl.git" }
-
-# TODO: swap out zmqdl for libcereal
-# cereal = { git = "https://github.com/jjpe/libcereal.git" }
-# cereal = { path = "../libcereal/" }
+cereal = { git = "https://github.com/jjpe/libcereal.git" }
