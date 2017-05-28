@@ -1,6 +1,6 @@
 [root]
 name = "spoofax_collector"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bson 0.7.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "cereal 0.9.0",

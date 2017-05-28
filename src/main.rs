@@ -9,11 +9,13 @@ extern crate mongodb;
 extern crate time;
 extern crate url;
 
+use bson::ordered::OrderedDocument;
 use clap::{App, Arg, SubCommand};
 use libcereal::Method;
 use libcereal::amplify::{BReportReceiver, Report, UReportReceiver};
 use mongodb::{ThreadedClient};
 use mongodb::db::ThreadedDatabase;
+use std::fmt;
 use url::Url;
 
 const BIN_NAME: &str = env!("CARGO_PKG_NAME");
@@ -25,7 +27,7 @@ After all events are captured, the data is written to a MongoDB database."#;
 
 #[derive(Clone, Debug)]
 struct Args {
-    events: u64,
+    events: LoopStrategy,
     mongodb_url: Url,
     quiet: bool,
     header_period: u64,
@@ -42,7 +44,8 @@ impl Args {
                  .short("e")
                  .long("events")
                  .value_name("N")
-                 .help("The number of events to capture. The default is 10."))
+                 .help("The number of events to capture.
+The default is indefinite i.e. don't stop unkil killed."))
             .arg(Arg::with_name("mongo-url")
                  .short("u")
                  .long("mongo-url")
@@ -79,9 +82,16 @@ The default is mongodb://localhost:27017."))
             else { Method::CapnProto };
 
         Args {
-            events: matches.value_of("events")
-                .unwrap_or("10")
-                .parse().unwrap(/* TODO: std::num::ParseIntError */),
+            events: match matches.value_of("events") {
+                None => LoopStrategy::Loop,
+                Some(s) => match s{
+                    "loop"|"infinite" => LoopStrategy::Loop,
+                    s => {
+                        let num_events: u64 = s.parse().unwrap(/* TODO: std::num::ParseIntError */);
+                        LoopStrategy::Finite(num_events)
+                    }
+                },
+            },
             mongodb_url: matches.value_of("mongo-url")
                 .unwrap_or("mongodb://localhost:27017")
                 .parse().unwrap(/* TODO: url::ParseError */),
@@ -90,6 +100,22 @@ The default is mongodb://localhost:27017."))
                 .unwrap_or("50")
                 .parse().unwrap(/* TODO: std::num::ParseIntError */),
             method: method,
+        }
+    }
+}
+
+
+#[derive(Clone, Debug)]
+enum LoopStrategy {
+    Loop,
+    Finite(u64),
+}
+
+impl fmt::Display for LoopStrategy {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            LoopStrategy::Loop => write!(f, "loop"),
+            LoopStrategy::Finite(num_events) => write!(f, "{}", num_events),
         }
     }
 }
@@ -144,8 +170,8 @@ impl CollectorDb {
 }
 
 
-fn log_event_header(eventno: usize, args: &Args) {
-    if eventno % args.header_period as usize == 1 {
+fn log_event_header(eventno: u64, args: &Args) {
+    if eventno % args.header_period == 1 {
         // Log the header every `args.header_period` entries
         info!("    {:->110}", "");
         info!("    {:^37}{:^15}{:^23}{:^20}{:>8}",
@@ -153,18 +179,22 @@ fn log_event_header(eventno: usize, args: &Args) {
               "event #",
               "action",
               "process",
-              "revision");
+              "request no.");
         info!("    {:->110}", "");
     }
 }
 
-fn log_event(eventno: usize, timestamp: &str, args: &Args, report: &Report) {
+fn log_event(eventno: u64, timestamp: &str, args: &Args, report: &Report) {
     log_event_header(eventno, args);
     // while timestamp.len() < 15 { timestamp.push(' '); }
-    info!("    {:-<15}   {:>3}/{}   {:^25}{:^20}{:>6}",
+    let eventno_part = match args.events {
+        LoopStrategy::Loop => format!("{:>6}", eventno),
+        LoopStrategy::Finite(num_events) =>
+            format!("{:>3}/{}", eventno, num_events),
+    };
+    info!("    {:-<15}   {}   {:^25}{:^20}{:>6}",
           timestamp,
-          eventno,
-          args.events,
+          eventno_part,
           report.action_ref(),
           report.process_ref(),
           report.request_number(),
@@ -176,10 +206,13 @@ fn main() {
     let args = Args::process();
     if !args.quiet { env_logger::init().unwrap(/* TODO: SetLoggerErr */); }
 
-    info!("Capturing {} events", args.events);
     info!("MongoDB @ {}", args.mongodb_url);
     let now = time::now_utc().to_local();
     info!("Started @ {}", stringify_timestamp(&now));
+    match args.events {
+        LoopStrategy::Loop => info!("Capturing events until killed"),
+        LoopStrategy::Finite(n) => info!("Capturing {} events", n),
+    }
 
     info!("Waiting for connection");
     let mut receiver: BReportReceiver = UReportReceiver::new()
@@ -190,16 +223,16 @@ fn main() {
     let mut events = vec![];
     let mut report = Report::default();
 
-    for eventno in 1 .. {
+
+    let loop_entry = &mut |eventno: u64, mut events: Vec<OrderedDocument>| {
         receiver.receive(&mut report).unwrap(/* TODO: ReportErr */);
 
         match report.command_ref() {
             None => {/* Not a command but a report, so deal with it below. */},
             Some("flush") => if events.len() > 0 {
-                db.write_events(events); // This consumes `events`...
-                events = vec![]; // ... so initialize a new one.
+                db.write_events(events);
                 info!("Flushed events");
-                continue;
+                return vec![]; // new events
             },
             Some("exit") => {
                 info!("Exiting");
@@ -207,7 +240,7 @@ fn main() {
             },
             Some(cmd) => {
                 warn!("Ignoring unknown command '{}'", cmd);
-                continue;
+                return events;
             },
         }
 
@@ -225,6 +258,18 @@ fn main() {
             "collector_timestamp" => timestamp_string,
             "collector_timestamp_ns" => timestamp_ns
         });
+        events
+    };
+
+    match args.events {
+        LoopStrategy::Loop =>
+            for eventno in 1 .. {
+                events = loop_entry(eventno, events);
+            },
+        LoopStrategy::Finite(num_events) =>
+            for eventno in 1 .. num_events + 1 {
+                events = loop_entry(eventno, events);
+            },
     }
 }
 
