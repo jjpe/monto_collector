@@ -233,7 +233,7 @@ fn main() {
                 info!("Flushed events");
                 return vec![]; // new events
             },
-            Some("exit") => {
+            Some("exit") | Some("quit") => {
                 info!("Exiting");
                 std::process::exit(0);
             },
