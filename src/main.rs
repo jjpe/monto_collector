@@ -213,8 +213,8 @@ fn main() {
         LoopStrategy::Loop => info!("Capturing events until killed"),
         LoopStrategy::Finite(n) => info!("Capturing {} events", n),
     }
-
     info!("Waiting for connection");
+
     let mut receiver: BReportReceiver = UReportReceiver::new()
         .unwrap(/* TODO: ReportErr */)
         .serialization_method(args.method)
@@ -222,7 +222,6 @@ fn main() {
     let db = CollectorDb::connect(&args.mongodb_url);
     let mut events = vec![];
     let mut report = Report::default();
-
 
     let loop_entry = &mut |eventno: u64, mut events: Vec<OrderedDocument>| {
         receiver.receive(&mut report).unwrap(/* TODO: ReportErr */);
