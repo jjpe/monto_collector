@@ -10,7 +10,8 @@ extern crate time;
 extern crate url;
 
 use bson::ordered::OrderedDocument;
-use clap::{App, Arg, SubCommand};
+use clap::{App, Arg//, SubCommand
+};
 use libcereal::Method;
 use libcereal::amplify::{BReportReceiver, Report, UReportReceiver};
 use mongodb::{ThreadedClient};
